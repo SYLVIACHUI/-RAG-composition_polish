@@ -45,7 +45,14 @@ class CoreTests(unittest.TestCase):
                 with self.assertRaises(rag.RagError):
                     rag.ensure_index(force=True)
                 with real_connect(path) as db:
-                    self.assertEqual(db.execute('SELECT COUNT(*) FROM chunks').fetchone()[0], 6)
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM chunks').fetchone()[0], len(rag.read_corpus()['chunks']))
+
+    def test_multidocument_corpus_has_distinct_ids_and_titles(self):
+        corpus = rag.read_corpus()
+        self.assertEqual(corpus['document_count'], 11)
+        self.assertEqual(len({c['id'] for c in corpus['chunks']}), len(corpus['chunks']))
+        self.assertEqual(len({c['title'] for c in corpus['chunks']}), 11)
+        self.assertEqual(len({d['genre'] for d in corpus['documents'][1:]}), 10)
 
     def test_feedback_rejects_missing_run_and_saves_scores(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(evaluation, 'DB_PATH', Path(folder) / 'eval.db'):

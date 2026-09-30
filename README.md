@@ -28,7 +28,7 @@ python app.py
 
 ## 实际 RAG 流程
 
-1. 读取生成的范文《雨中的那把伞》，按自然段分成 6 个片段；长段落每 300 字分块，重叠 40 字。
+1. 自动读取 `data/essays/` 中每篇独立的 JSON 作文，并同步到 SQLite 作文数据库，按自然段分块；长段落每 300 字分块，重叠 40 字。
 2. 调用 Ollama `/api/embed`，使用 `qwen3-embedding:0.6b` 生成 1024 维向量，归一化后写入 SQLite。
 3. 将输入作文转换为向量，计算与库中片段的余弦相似度，取 Top-3。
 4. 将真实检索出的片段、学生原文、年级和个性化要求放入 prompt，调用 `qwen3:4b`。
@@ -45,7 +45,10 @@ python app.py
 | `rag.py` | Ollama 调用、切分、向量入库、Top-3 检索和 prompt |
 | `evaluation.py` | 字符 BLEU、润色记录和人工反馈持久化 |
 | `static/index.html` | 中文浏览器界面，无外部 CDN |
-| `data/reference_essay.md` | 本次生成的演示范文，可替换内容 |
+| `data/essays/*.json` | 每篇作文一个文件，包含正文、文体、年级、来源和写法 |
+| `data/compositions.sqlite3` | 自动同步的作文数据库 |
+| `corpus.py` / `manage_corpus.py` | 作文校验、数据库同步和命令行导入 |
+| `data/archive/` | 历史合并文件备份，不参与检索 |
 | `data/vectors.sqlite3` | 实际生成的向量数据库 |
 | `data/evaluations.sqlite3` | 原文、要求、润色结果、检索片段、prompt 版本、人工评分 |
 | `.env` | Ollama 地址和两个模型名称 |
@@ -57,7 +60,7 @@ python app.py
 - **机器评价**：字符级 BLEU-4，以学生原文为单一参考；去掉空白，保留标点，采用 1～4 gram 等权精确率和长度惩罚，不做平滑。数值是 0～100，用于观察字面改写程度，**不是润色质量、语义匹配准确率或作文分数**。BLEU 基于 [Papineni 等人的原始论文](https://aclanthology.org/P02-1040/)，此处使用中文字符分词。
 - **人工评价**：原意保留、表达通顺、年级适配各 1～5 分。两位评价者应独立评价后分别录入；同一记录、同一评价者再次保存会更新其评分。
 - 每次润色和人工反馈保存在本机 SQLite，可用于后续 prompt、检索策略和知识库的人工迭代；没有自动训练或自动改写 prompt。
-- 目前仅有 **1 篇 AI 生成范文**，只验证闭环。跨主题作文仍会检索到这篇范文中的片段，相似度只表示相对接近程度；提示词允许不采纳不相关参考。
+- 目前有 **11 篇 AI 生成范文**（原有 1 篇和新增 10 篇），覆盖多种文体，但仍属于小型演示语料库。库中没有相近主题时也会返回相对最接近的片段，相似度只表示相对接近程度；提示词允许不采纳不相关参考。
 - 项目简介中的 **4328 篇数据、Kappa 0.82、匹配度 92%** 没有作为本次演示的测量结果使用。尚未导入完整语料，未开展双人标注统计，也未计算 Kappa 或匹配准确率。
 - 本版支持粘贴文字，不含 OCR。模型输出可能出现过度修改，仍需结合原文和人工评分检查。
 - 实测已知问题：`qwen3:4b` 在雨伞示例中可能把“拿过去一点”误解为“往我这边靠”，即使加入独立复核也未稳定纠正。因此当前闭环验证只证明检索、生成与评价可运行，不证明语义保真；这类样例应纳入后续人工评估和模型对比。
@@ -71,3 +74,14 @@ python -m unittest discover -s tests -v
 测试覆盖向量排序、维度不匹配、输入边界、索引缓存与失败保留、输出截断、来源有效性、BLEU 和人工反馈存储。
 
 Ollama 官方接口：[Embedding](https://docs.ollama.com/api/embed)、[Chat](https://docs.ollama.com/api/chat)。
+
+## 持续扩充作文库
+
+每篇作文独立存放在 `data/essays/`，当前共 11 篇。新增 UTF-8 文本示例：
+
+```powershell
+python manage_corpus.py add --file "D:\我的作文\春天.txt" --title "春天来了" --genre "写景散文" --grade "小学四年级"
+python manage_corpus.py reindex
+```
+
+也可直接在目录中新建符合格式的 JSON 文件，下次润色会自动识别。详见 [作文库管理说明](data/essays/README.md)。

@@ -1,4 +1,3 @@
-"""Ollama + SQLite 的最小作文 RAG。只使用 Python 标准库。"""
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +11,7 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import evaluation
+import corpus as essay_corpus
 
 ROOT = Path(__file__).resolve().parent
 for line in (ROOT / '.env').read_text(encoding='utf-8-sig').splitlines() if (ROOT / '.env').exists() else []:
@@ -22,7 +22,6 @@ for line in (ROOT / '.env').read_text(encoding='utf-8-sig').splitlines() if (ROO
 BASE_URL = os.environ.get('OLLAMA_BASE_URL', 'http://127.0.0.1:11434').rstrip('/')
 CHAT_MODEL = os.environ.get('OLLAMA_CHAT_MODEL', 'qwen3:4b')
 EMBED_MODEL = os.environ.get('OLLAMA_EMBEDDING_MODEL', 'qwen3-embedding:0.6b')
-CORPUS = ROOT / 'data' / 'reference_essay.md'
 DB_PATH = ROOT / 'data' / 'vectors.sqlite3'
 GRADES = [f'小学{n}年级' for n in '一二三四五六'] + [f'初中{n}年级' for n in '一二三'] + [f'高中{n}年级' for n in '一二三']
 FOCUSES = ['保留原意，适度润色', '修正语病，让表达通顺', '加强细节与段落衔接']
@@ -54,20 +53,33 @@ def ollama(path, payload=None, timeout=360):
 
 
 def read_corpus():
-    raw = CORPUS.read_text(encoding='utf-8')
-    title = raw.splitlines()[0].lstrip('# ').strip()
+    try:
+        documents = essay_corpus.read_documents()
+    except (ValueError, OSError) as exc:
+        raise RagError(str(exc)) from exc
     # 保留自然段边界；长段落切成 300 字的小块，重叠 40 字。
     chunks = []
-    for paragraph in raw.split('\n\n')[1:]:
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-        for start in range(0, len(paragraph), 260):
-            chunks.append({'id': f'P{len(chunks) + 1}', 'text': paragraph[start:start + 300]})
-            if start + 300 >= len(paragraph):
-                break
-    return {'title': title, 'text': raw, 'chunks': chunks, 'source': CORPUS.name,
-            'note': 'AI 生成的演示范文，仅用于参考写法，并非教材或评分标准。'}
+    for doc in documents:
+        number = 0
+        for paragraph in doc['paragraphs']:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            for start in range(0, len(paragraph), 260):
+                number += 1
+                chunk_id = f'P{number}' if doc['id'] == 'original' else f"{doc['id']}-P{number}"
+                chunks.append({'id': chunk_id, 'text': paragraph[start:start + 300],
+                               'title': doc['title'], 'genre': doc['genre'], 'grade': doc['grade'],
+                               'techniques': doc['techniques']})
+                if start + 300 >= len(paragraph):
+                    break
+    text = '\n\n──────────\n\n'.join(
+        '# ' + doc['title'] + '\n' + doc['genre'] + ' · ' + doc['grade'] + '\n'
+        + '可借鉴写法：' + '、'.join(doc['techniques']) + '\n\n' + '\n\n'.join(doc['paragraphs'])
+        for doc in documents)
+    return {'title': '语你一起作文知识库', 'text': text, 'chunks': chunks,
+            'documents': documents, 'document_count': len(documents),
+            'note': '作文用于参考写法，来源见各篇记录，并非教材或评分标准。'}
 
 
 def normalized(values):
@@ -104,7 +116,7 @@ def connect(db_path=DB_PATH):
 
 
 def fingerprint(corpus, model_digest):
-    value = corpus['text'] + EMBED_MODEL + model_digest + 'paragraph-v1'
+    value = json.dumps(corpus['documents'], ensure_ascii=False, sort_keys=True) + EMBED_MODEL + model_digest + 'paragraph-v2'
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
@@ -120,17 +132,17 @@ def ensure_index(force=False):
         meta = dict(db.execute('SELECT key, value FROM meta'))
         count = db.execute('SELECT COUNT(*) FROM chunks').fetchone()[0]
     if not force and meta.get('fingerprint') == version and count == len(corpus['chunks']):
-        return {'chunks': count, 'dimensions': int(meta['dimensions']), 'rebuilt': False}
-    vectors = embed([corpus['title'] + '\n' + c['text'] for c in corpus['chunks']])
+        return {'chunks': count, 'documents': corpus['document_count'], 'dimensions': int(meta['dimensions']), 'rebuilt': False}
+    vectors = embed([c['title'] + ' · ' + c['genre'] + '\n' + c['text'] for c in corpus['chunks']])
     # 先成功生成所有向量，再在一个事务内替换索引，失败不破坏旧库。
     with connect() as db:
         db.execute('DELETE FROM chunks')
         db.execute('DELETE FROM meta')
         db.executemany('INSERT INTO chunks VALUES (?, ?, ?, ?)',
-                       [(c['id'], corpus['title'], c['text'], json.dumps(v)) for c, v in zip(corpus['chunks'], vectors)])
+                       [(c['id'], c['title'], c['text'], json.dumps(v)) for c, v in zip(corpus['chunks'], vectors)])
         db.executemany('INSERT INTO meta VALUES (?, ?)', [('fingerprint', version),
                        ('dimensions', str(len(vectors[0]))), ('model', EMBED_MODEL)])
-    return {'chunks': len(vectors), 'dimensions': len(vectors[0]), 'rebuilt': True}
+    return {'chunks': len(vectors), 'documents': corpus['document_count'], 'dimensions': len(vectors[0]), 'rebuilt': True}
 
 
 def rank_chunks(query_vector, rows, top_k=3):
@@ -148,7 +160,12 @@ def retrieve(essay, top_k=3):
     query_vector = embed([essay])[0]
     with connect() as db:
         rows = db.execute('SELECT id, title, text, vector FROM chunks').fetchall()
-    return rank_chunks(query_vector, rows, top_k)
+    results = rank_chunks(query_vector, rows, top_k)
+    metadata = {c['id']: c for c in read_corpus()['chunks']}
+    for result in results:
+        info = metadata.get(result['id'], {})
+        result.update({key: info.get(key, '') for key in ('genre', 'grade', 'techniques')})
+    return results
 
 
 def validate_request(data):
@@ -264,7 +281,8 @@ def polish(data, emit=lambda event: None):
 
 
 def status():
-    result = {'ready': False, 'chat_model': CHAT_MODEL, 'embedding_model': EMBED_MODEL, 'chunks': 0, 'dimensions': None}
+    result = {'ready': False, 'chat_model': CHAT_MODEL, 'embedding_model': EMBED_MODEL, 'chunks': 0, 'dimensions': None,
+              'documents': read_corpus()['document_count']}
     try:
         names = [m['name'] for m in ollama('/api/tags', timeout=5).get('models', [])]
         result['ready'] = CHAT_MODEL in names and EMBED_MODEL in names
