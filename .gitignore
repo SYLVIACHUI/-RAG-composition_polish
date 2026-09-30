@@ -1,0 +1,12 @@
+.local/
+.env
+__pycache__/
+data/*.sqlite3
+data/*.sqlite3-journal
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+.venv/
+*.log
+# Local installer download and machine verification output
+ollama-install.ps1
+ollama-verification.json
