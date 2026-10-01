@@ -49,10 +49,11 @@ class CoreTests(unittest.TestCase):
 
     def test_multidocument_corpus_has_distinct_ids_and_titles(self):
         corpus = rag.read_corpus()
-        self.assertEqual(corpus['document_count'], 11)
+        self.assertEqual(corpus['document_count'], len(corpus['documents']))
+        self.assertGreaterEqual(corpus['document_count'], 11)
         self.assertEqual(len({c['id'] for c in corpus['chunks']}), len(corpus['chunks']))
-        self.assertEqual(len({c['title'] for c in corpus['chunks']}), 11)
-        self.assertEqual(len({d['genre'] for d in corpus['documents'][1:]}), 10)
+        self.assertEqual({c['title'] for c in corpus['chunks']}, {d['title'] for d in corpus['documents']})
+        self.assertGreaterEqual(len({d['genre'] for d in corpus['documents'][1:]}), 10)
 
     def test_feedback_rejects_missing_run_and_saves_scores(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(evaluation, 'DB_PATH', Path(folder) / 'eval.db'):

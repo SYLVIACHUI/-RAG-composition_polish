@@ -27,7 +27,7 @@ python manage_corpus.py add --file "D:\我的作文\春天.txt" --title "春天�
 }
 ```
 
-不要把这份模板本身作为范文入库。`paragraphs` 至少有一段，`techniques` 可以是空列表。现有 11 篇均标记为 AI 示例。
+不要把这份模板本身作为范文入库。`paragraphs` 至少有一段，`techniques` 可以是空列表。现有 51 篇均标记为 AI 示例，未经教师审定。本次新增的 20 篇编号为 `essay31` 至 `essay50`。可在 [作文目录](INDEX.md) 中按标题、文体和年级查找；目录为当前快照，新增作文后以管理命令列出的内容为准。
 
 ## 查看与更新
 

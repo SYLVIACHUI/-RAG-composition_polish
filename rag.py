@@ -36,11 +36,33 @@ class RagError(Exception):
     pass
 
 
-def ollama(path, payload=None, timeout=360):
+def ollama(path, payload=None, timeout=360, on_progress=None):
+    streaming = path == '/api/chat' and payload is not None
+    if streaming:
+        payload = {**payload, 'stream': True}
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
     req = Request(BASE_URL + path, data=data, headers={'Content-Type': 'application/json'})
     try:
         with urlopen(req, timeout=timeout) as response:
+            if streaming:
+                started = last_progress = time.monotonic()
+                content = []
+                for line in response:
+                    if not line.strip():
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get('error'):
+                        raise RagError(f"Ollama 生成失败：{chunk['error']}")
+                    now = time.monotonic()
+                    if now - started > 900:
+                        raise RagError('本轮生成超过 15 分钟，已停止等待。请缩短作文后重试。')
+                    content.append(chunk.get('message', {}).get('content', ''))
+                    if on_progress and now - last_progress >= 3:
+                        on_progress(round(now - started))
+                        last_progress = now
+                    if chunk.get('done'):
+                        return {**chunk, 'message': {'role': 'assistant', 'content': ''.join(content)}}
+                raise RagError('Ollama 输出中途断开，未收到完整结果，请重试。')
             result = json.load(response)
         if result.get('error'):
             raise RagError(str(result['error']))
@@ -49,7 +71,12 @@ def ollama(path, payload=None, timeout=360):
         detail = exc.read().decode('utf-8', errors='replace')[:300]
         raise RagError(f'Ollama 请求失败（{exc.code}）：{detail}') from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise RagError('无法连接 Ollama，或模型响应超时。请确认 Ollama 已启动，再重试。') from exc
+        reason = getattr(exc, 'reason', exc)
+        if isinstance(reason, TimeoutError):
+            raise RagError(f'Ollama 连续 {timeout} 秒未响应。模型可能仍在加载或计算，请稍后重试，或缩短作文。') from exc
+        raise RagError(f'无法连接 Ollama（{BASE_URL}）或连接已中断。请确认 Ollama 已启动。') from exc
+    except (ValueError, TypeError) as exc:
+        raise RagError('Ollama 返回的数据格式无效，请重试。') from exc
 
 
 def read_corpus():
@@ -194,7 +221,7 @@ RESULT_SCHEMA = {
 }
 
 
-def generate(essay, grade, focus, references, requirement=''):
+def generate(essay, grade, focus, references, requirement='', on_progress=None):
     system = '''你是一位耐心的中小学语文老师。任务是润色学生已有的汉语作文。
 保持原文人物、事件、事实、第一人称和中心意思，不添加原文没有的经历、对白、人物、具体物品或天气细节。
 优先做最小修改，只改确实不通顺的地方，不必改动每一句。不得新增笑、摆手等原文没有的动作或表情。
@@ -210,8 +237,8 @@ reference_usage 说明真正借鉴的表达方法，每条使用提供的片段 
                        '检索到的参考片段': references}, ensure_ascii=False)
     response = ollama('/api/chat', {'model': CHAT_MODEL, 'messages': [
         {'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-        'think': True, 'stream': False, 'format': RESULT_SCHEMA, 'keep_alive': '5m',
-        'options': {'temperature': 0.2, 'num_ctx': 8192, 'num_predict': 6144}})
+        'think': True, 'stream': True, 'format': RESULT_SCHEMA, 'keep_alive': '5m',
+        'options': {'temperature': 0.2, 'num_ctx': 8192, 'num_predict': 6144}}, on_progress=on_progress)
     if response.get('done_reason') != 'stop':
         raise RagError('模型输出未完整结束，请缩短作文后重试。')
     try:
@@ -231,7 +258,7 @@ reference_usage 说明真正借鉴的表达方法，每条使用提供的片段 
     return result
 
 
-def review_fidelity(essay, draft, grade, requirement):
+def review_fidelity(essay, draft, grade, requirement, on_progress=None):
     """独立复核原意；不再次输入范文，减少参考情节对事实核对的干扰。"""
     response = ollama('/api/chat', {'model': CHAT_MODEL, 'messages': [
         {'role': 'system', 'content': '''你是作文校对老师。对照学生原文检查润色稿，修正任何改变人物、动作对象、方向或因果的地方。
@@ -240,8 +267,8 @@ def review_fidelity(essay, draft, grade, requirement):
 返回与输入润色稿相同结构的 JSON（title、polished_text、suggestions、reference_usage）。
 只保留确实发生的修改说明，来源 ID 不得新增。用简短分析完成复核。'''},
         {'role': 'user', 'content': json.dumps({'年级': grade, '要求': requirement, '原文': essay, '润色稿': draft}, ensure_ascii=False)}],
-        'think': True, 'stream': False, 'format': RESULT_SCHEMA, 'keep_alive': '5m',
-        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': 4096}})
+        'think': True, 'stream': True, 'format': RESULT_SCHEMA, 'keep_alive': '5m',
+        'options': {'temperature': 0, 'num_ctx': 8192, 'num_predict': 6144}}, on_progress=on_progress)
     if response.get('done_reason') != 'stop':
         raise RagError('原意复核未完成，请重试。')
     try:
@@ -269,9 +296,12 @@ def polish(data, emit=lambda event: None):
     emit({'type': 'stage', 'step': 1, 'message': '将你的作文转换为向量，检索相关范文片段…', 'index': index})
     references = retrieve(essay)
     emit({'type': 'references', 'step': 2, 'message': '已找到参考片段，Qwen3 正在润色…', 'references': references})
-    result = generate(essay, grade, focus, references, data.get('requirement', ''))
+    def progress(label):
+        return lambda seconds: emit({'type': 'stage', 'step': 2,
+                                     'message': f'{label}：模型正在输出，本阶段已用时 {seconds} 秒…'})
+    result = generate(essay, grade, focus, references, data.get('requirement', ''), progress('作文润色'))
     emit({'type': 'stage', 'step': 2, 'message': '初稿已生成，正在对照原文复核人物、动作与结尾…'})
-    result = review_fidelity(essay, result, grade, data.get('requirement', ''))
+    result = review_fidelity(essay, result, grade, data.get('requirement', ''), progress('原意复核'))
     result.update({'references': references, 'index': index, 'elapsed_seconds': round(time.monotonic() - started, 1),
                    'chat_model': CHAT_MODEL, 'embedding_model': EMBED_MODEL})
     result['metrics'] = evaluation.machine_metrics(essay, result['polished_text'])
