@@ -1,6 +1,8 @@
 # 语你一起：中小学生汉语作文智能评价与润色系统
 
-基于 Python + 本地 Ollama 的最小可运行 RAG 演示，围绕项目简介实现个性化润色、参考片段展示、机器指标和人工反馈。
+## 演示
+
+![main](https://github.com/SYLVIACHUI/-RAG-composition_polish/blob/main/photo/main.png)
 
 ## 启动
 
@@ -37,42 +39,12 @@ python app.py
 
 这里的向量库是 **SQLite 保存向量 + Python 全量余弦检索**，适合最小示例；当前不依赖 Chroma、FAISS 或 LangChain。
 
-## 文件
-
-| 文件 | 作用 |
-| --- | --- |
-| `app.py` | Python HTTP 服务与流式进度接口 |
-| `rag.py` | Ollama 调用、切分、向量入库、Top-3 检索和 prompt |
-| `evaluation.py` | 字符 BLEU、润色记录和人工反馈持久化 |
-| `static/index.html` | 中文浏览器界面，无外部 CDN |
-| `data/essays/*.json` | 每篇作文一个文件，包含正文、文体、年级、来源和写法 |
-| `data/compositions.sqlite3` | 自动同步的作文数据库 |
-| `corpus.py` / `manage_corpus.py` | 作文校验、数据库同步和命令行导入 |
-| `data/archive/` | 历史合并文件备份，不参与检索 |
-| `data/vectors.sqlite3` | 实际生成的向量数据库 |
-| `data/evaluations.sqlite3` | 原文、要求、润色结果、检索片段、prompt 版本、人工评分 |
-| `.env` | Ollama 地址和两个模型名称 |
-
-范文内容、Embedding 模型名称或模型摘要发生变化时，系统自动重建索引。构建失败时保留原索引。为照顾 6GB 显存，Embedding 请求后释放模型，聊天上下文设为 8192；同一时刻只处理一个模型任务。
-
 ## 评价的含义与边界
 
 - **机器评价**：字符级 BLEU-4，以学生原文为单一参考；去掉空白，保留标点，采用 1～4 gram 等权精确率和长度惩罚，不做平滑。数值是 0～100，用于观察字面改写程度，**不是润色质量、语义匹配准确率或作文分数**。BLEU 基于 [Papineni 等人的原始论文](https://aclanthology.org/P02-1040/)，此处使用中文字符分词。
 - **人工评价**：原意保留、表达通顺、年级适配各 1～5 分。两位评价者应独立评价后分别录入；同一记录、同一评价者再次保存会更新其评分。
-- 每次润色和人工反馈保存在本机 SQLite，可用于后续 prompt、检索策略和知识库的人工迭代；没有自动训练或自动改写 prompt。
-- 目前有 **51 篇 AI 生成范文**（原有 31 篇，本次新增 20 篇），覆盖小学至高中阶段的多种文体，但仍属于小型演示语料库。库中没有相近主题时也会返回相对最接近的片段，相似度只表示相对接近程度；提示词允许不采纳不相关参考。篇目见 [作文目录](data/essays/INDEX.md)。
-- 项目简介中的 **4328 篇数据、Kappa 0.82、匹配度 92%** 没有作为本次演示的测量结果使用。尚未导入完整语料，未开展双人标注统计，也未计算 Kappa 或匹配准确率。
-- 本版支持粘贴文字，不含 OCR。模型输出可能出现过度修改，仍需结合原文和人工评分检查。
-- 实测已知问题：`qwen3:4b` 在雨伞示例中可能把“拿过去一点”误解为“往我这边靠”，即使加入独立复核也未稳定纠正。因此当前闭环验证只证明检索、生成与评价可运行，不证明语义保真；这类样例应纳入后续人工评估和模型对比。
 
-## 连接与生成超时
-
-- 提示“无法连接 Ollama”时，先启动 Ollama 应用，或在另一个终端运行 `ollama serve`。
-- 润色与原意复核采用流式接收；模型持续输出期间，页面约每 3 秒更新一次阶段用时。加载模型或处理输入期间可能暂时没有更新。
-- 连续 360 秒没有响应会提示超时；收到响应后，每轮生成超过 15 分钟会在读取到下一条数据时停止。可缩短作文、关闭其他占用 GPU 的程序后重试。
-- 修改代码后，在运行服务的 VS Code 终端按 `Ctrl+C`，重新运行 `python app.py`，然后刷新网页。
-
-## 自动化测试
+## 测试
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -84,11 +56,4 @@ Ollama 官方接口：[Embedding](https://docs.ollama.com/api/embed)、[Chat](ht
 
 ## 持续扩充作文库
 
-每篇作文独立存放在 `data/essays/`，当前共 51 篇。新增 UTF-8 文本示例：
-
-```powershell
-python manage_corpus.py add --file "D:\我的作文\春天.txt" --title "春天来了" --genre "写景散文" --grade "小学四年级"
-python manage_corpus.py reindex
-```
-
-也可直接在目录中新建符合格式的 JSON 文件，下次润色会自动识别。详见 [作文库管理说明](data/essays/README.md)。
+每篇作文独立存放在 `data/essays/`，可自行在目录中新建符合格式的 JSON 文件，下次润色会自动识别。详见 [作文库管理说明](data/essays/README.md)。
