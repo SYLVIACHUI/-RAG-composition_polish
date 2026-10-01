@@ -3,6 +3,7 @@
 ## 演示
 
 ![main](https://github.com/SYLVIACHUI/-RAG-composition_polish/blob/main/photo/main.png)
+![rag](https://github.com/SYLVIACHUI/-RAG-composition_polish/blob/main/photo/polish.gif)
 
 ## 启动
 
