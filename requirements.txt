@@ -1,0 +1,7 @@
+jieba==0.42.1
+rank-bm25==0.2.2
+fastapi==0.136.3
+uvicorn==0.32.0
+pydantic>=2.9,<3
+langchain-core==1.6.7
+langsmith==0.14.4

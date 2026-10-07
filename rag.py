@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import evaluation
 import corpus as essay_corpus
+from retrieval import rank_bm25, fuse_rankings
 
 ROOT = Path(__file__).resolve().parent
 for line in (ROOT / '.env').read_text(encoding='utf-8-sig').splitlines() if (ROOT / '.env').exists() else []:
@@ -184,10 +185,14 @@ def rank_chunks(query_vector, rows, top_k=3):
 
 
 def retrieve(essay, top_k=3):
+    if top_k <= 0:
+        return []
     query_vector = embed([essay])[0]
     with connect() as db:
         rows = db.execute('SELECT id, title, text, vector FROM chunks').fetchall()
-    results = rank_chunks(query_vector, rows, top_k)
+    semantic = rank_chunks(query_vector, rows, len(rows))
+    lexical = rank_bm25(essay, semantic, max(10, top_k))
+    results = fuse_rankings(semantic, lexical, top_k)
     metadata = {c['id']: c for c in read_corpus()['chunks']}
     for result in results:
         info = metadata.get(result['id'], {})
@@ -289,25 +294,8 @@ def review_fidelity(essay, draft, grade, requirement, on_progress=None):
 
 
 def polish(data, emit=lambda event: None):
-    started = time.monotonic()
-    essay, grade, focus = validate_request(data)
-    emit({'type': 'stage', 'step': 0, 'message': '检查范文和向量索引…'})
-    index = ensure_index()
-    emit({'type': 'stage', 'step': 1, 'message': '将你的作文转换为向量，检索相关范文片段…', 'index': index})
-    references = retrieve(essay)
-    emit({'type': 'references', 'step': 2, 'message': '已找到参考片段，Qwen3 正在润色…', 'references': references})
-    def progress(label):
-        return lambda seconds: emit({'type': 'stage', 'step': 2,
-                                     'message': f'{label}：模型正在输出，本阶段已用时 {seconds} 秒…'})
-    result = generate(essay, grade, focus, references, data.get('requirement', ''), progress('作文润色'))
-    emit({'type': 'stage', 'step': 2, 'message': '初稿已生成，正在对照原文复核人物、动作与结尾…'})
-    result = review_fidelity(essay, result, grade, data.get('requirement', ''), progress('原意复核'))
-    result.update({'references': references, 'index': index, 'elapsed_seconds': round(time.monotonic() - started, 1),
-                   'chat_model': CHAT_MODEL, 'embedding_model': EMBED_MODEL})
-    result['metrics'] = evaluation.machine_metrics(essay, result['polished_text'])
-    result['run_id'] = evaluation.save_run(data, result)
-    emit({'type': 'result', 'step': 3, 'result': result})
-    return result
+    from pipeline import run_polish
+    return run_polish(data, emit)
 
 
 def status():
